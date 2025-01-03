@@ -26,37 +26,28 @@
 import urllib.request
 from pathlib import Path
 import modal
-import os
 
 app = modal.App("got_ocr_volume_backend-v")
 
-# Create a persistent volume to store our model weights
-# This ensures we don't need to download them on every run
+# Model Volume Directory
+VOLUME_NAME = "got-ocr-model-hf"
+MODEL_DIR = Path(f"/{VOLUME_NAME}")
 
-# Create or get the volume for model weights
-volume = modal.Volume.from_name("got-ocr-weights", create_if_missing=True)
-MODEL_DIR = Path("/models")
-
-# Model information
+# Model Name
 HF_MODEL_NAME = "ucaslcl/GOT-OCR2_0"
-LOCAL_MODEL_NAME = "GOT"
+
+# Check if the model is already downloaded
+try:
+    print("Checking if model is downloaded...")
+    volume = modal.Volume.lookup(VOLUME_NAME, create_if_missing=False)
+except modal.exception.NotFoundError:
+    raise Exception("Download models first with `modal run download_got.py`")
+
+print(f"Try catch succeded: the model has been correctly downloaded!")
 
 # ## Container Images
 
-# We need two specialized container images:
-# 1. A lightweight image for fast model downloads
-# 2. A full inference image with ML dependencies
-
-# The download image uses Hugging Face's fast download protocol
-download_image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "huggingface_hub[hf_transfer]", 
-        "transformers", 
-        "numpy>=1.17.0,<2.0.0",  # Explicitly specify numpy version range
-    )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-)
+# We need a specialized container image, i.e. a full inference image with ML dependencies.
 
 # The inference image contains all required ML libraries
 inference_image = (
@@ -73,44 +64,7 @@ inference_image = (
     )
 )
 
-# ## Model Download Function
 
-# This function handles downloading and caching of model weights.
-# It uses Modal's volume system to persist the weights between runs.
-
-
-@app.function(
-    volumes={MODEL_DIR: volume},
-    image=download_image,
-)
-def download_model():
-    from huggingface_hub import snapshot_download
-    import shutil
-    
-    model_path = MODEL_DIR / LOCAL_MODEL_NAME
-    
-    print(f"Starting GOT-OCR model download to {model_path}")
-    print(f"Current directory contents before download: {os.listdir(MODEL_DIR)}")
-    
-    try:
-        # Clear existing model directory if it exists
-        if model_path.exists():
-            shutil.rmtree(model_path)
-        
-        # Download the model
-        snapshot_download(
-            repo_id=HF_MODEL_NAME,
-            local_dir=model_path,
-        )
-        
-        print(f"Download completed. Contents of {model_path}:")
-        print(os.listdir(model_path))
-        
-        return True
-        
-    except Exception as e:
-        print(f"Error during model download: {str(e)}")
-        raise e
 
 # ## Model Wrapper
 
@@ -127,7 +81,7 @@ class ModelWrapper:
         from transformers import AutoModel, AutoTokenizer
         import os
         
-        model_path = MODEL_DIR / LOCAL_MODEL_NAME
+        model_path = MODEL_DIR / HF_MODEL_NAME
         print(f"Checking GOT-OCR model path: {model_path}")
         print(f"Directory contents: {os.listdir(model_path)}")
         
@@ -165,23 +119,21 @@ def parse_receipt(image_bytes: bytes):
     import io
     from PIL import Image
     
-    # First verify model is downloaded
-    try:
-        download_model.remote()
-    except Exception as e:
-        print(f"Error during model download: {str(e)}")
-        raise e
     
-    print("GOT-OCR model download verified, initializing wrapper...")
+    print("Initializing Model wrapper...")
     model_wrapper = ModelWrapper()
     model_wrapper.load_model()
     
     # Convert bytes to PIL Image
     input_img = Image.open(io.BytesIO(image_bytes))
-    
+
+    # Convert to RGB
+    input_img = input_img.convert("RGB")
+
     # Save image temporarily
     temp_path = "/tmp/temp_image.jpg"
-    input_img.save(temp_path)
+    input_img.save(temp_path, "JPEG")
+
     
     formatted_result = model_wrapper.model.chat(
         model_wrapper.tokenizer, 
@@ -191,10 +143,7 @@ def parse_receipt(image_bytes: bytes):
     
     return formatted_result
 
-# ## Local Testing
 
-# For easier debugging, we can run the pipeline locally:
-# `modal run ocr_pipeline.py`
 
 @app.local_entrypoint()
 def main():
@@ -218,12 +167,19 @@ def main():
 
 # ## Deploy
 
-# To deploy this pipeline:
+# To deploy this pipeline, run the following commands in this order:
+
+# 1. Download the model weights:
+# ```shell
+# modal run download_got.py
+# ```
+
+# 2. Deploy the pipeline:
 # ```shell
 # modal deploy doc_ocr_jobs_got_volume.py
 # ```
 
-# Once deployed, you can serve the app with:
+# 3. Serve the app:
 # ```shell
 # modal serve doc_ocr_webapp.py
 # ```

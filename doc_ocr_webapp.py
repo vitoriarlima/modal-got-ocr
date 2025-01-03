@@ -126,11 +126,23 @@ def wrapper():
 # modal serve got_ocr_webapp.py
 # ```
 
-# ## Deployment
+# ## Deploy
 
-# To deploy the application to production:
+# To deploy this pipeline, run the following commands in this order:
+
+# 1. Download the model weights:
 # ```shell
-# modal deploy got_ocr_webapp.py
+# modal run download_got.py
+# ```
+
+# 2. Deploy the pipeline:
+# ```shell
+# modal deploy doc_ocr_jobs_got_volume.py
+# ```
+
+# 3. Serve the app:
+# ```shell
+# modal serve doc_ocr_webapp.py
 # ```
 
 # That's all!
